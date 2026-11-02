@@ -1,0 +1,529 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0e1a2b">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Regenradar">
+<title>Regenradar</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root {
+    --ink: #0e1a2b;
+    --ink-2: #16273d;
+    --text: #e9f1fa;
+    --muted: #93a8c2;
+    --rain: #3aa7ff;
+    --line: #2a3f58;
+    --warn: #ffb454;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    height: 100dvh;
+    background: var(--ink);
+    color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-text-size-adjust: 100%;
+    overflow: hidden;
+  }
+
+  /* Karte */
+  .stage { position: relative; flex: 1 1 auto; min-height: 0; }
+  #map { position: absolute; inset: 0; background: #cfd8e3; }
+  .map-actions {
+    position: absolute; top: calc(10px + env(safe-area-inset-top)); left: 10px;
+    z-index: 1000; display: flex; gap: 8px;
+  }
+  .chip {
+    appearance: none; border: 0; cursor: pointer;
+    min-height: 40px; padding: 0 14px;
+    background: #fff; color: var(--ink);
+    font: 600 0.9rem/1 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    border-radius: 10px; box-shadow: 0 1px 6px rgba(0, 0, 0, .35);
+  }
+  .chip:active { background: #e3ecf6; }
+
+  /* Panel unten */
+  .panel {
+    flex: 0 0 auto;
+    background: var(--ink);
+    padding: 14px 16px calc(14px + env(safe-area-inset-bottom));
+    border-top: 1px solid var(--line);
+  }
+  .wx { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .place { margin: 0; font-size: 1.3rem; font-weight: 650; line-height: 1.2; overflow-wrap: anywhere; }
+  .desc { margin: 4px 0 0; color: var(--muted); font-size: 0.95rem; }
+  .temp { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+  .temp .icon { font-size: 2rem; line-height: 1; }
+  .temp .deg { font-size: 2.6rem; font-weight: 300; font-variant-numeric: tabular-nums; line-height: 1; }
+
+  .stats {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+    margin: 14px 0 6px; padding: 10px 0;
+    border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
+  }
+  .stats div { min-width: 0; }
+  .stats dt { color: var(--muted); font-size: 0.75rem; margin: 0 0 2px; }
+  .stats dd { margin: 0; font-size: 0.95rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+  /* Player */
+  .player { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
+  .play {
+    flex: 0 0 auto; width: 52px; height: 52px; border-radius: 50%;
+    border: 0; cursor: pointer; background: var(--rain); color: var(--ink);
+    display: grid; place-items: center;
+  }
+  .play:disabled { background: var(--ink-2); color: var(--muted); cursor: default; }
+  .play svg { width: 24px; height: 24px; fill: currentColor; }
+  .scrub { flex: 1 1 auto; min-width: 0; }
+  .times { display: flex; justify-content: space-between; gap: 8px; font-size: 0.85rem; margin-top: 2px; }
+  .times .rel { color: var(--muted); margin-left: 6px; }
+  .times .progress { color: var(--warn); }
+
+  input[type=range] {
+    -webkit-appearance: none; appearance: none;
+    width: 100%; height: 40px; margin: 0; background: transparent; cursor: pointer;
+  }
+  input[type=range]::-webkit-slider-runnable-track {
+    height: 6px; border-radius: 3px;
+    background: linear-gradient(to right, var(--rain) var(--pct, 0%), var(--line) var(--pct, 0%));
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 28px; height: 28px; margin-top: -11px;
+    border-radius: 50%; background: #fff; border: 3px solid var(--rain);
+  }
+  input[type=range]::-moz-range-track { height: 6px; border-radius: 3px; background: var(--line); }
+  input[type=range]::-moz-range-progress { height: 6px; border-radius: 3px; background: var(--rain); }
+  input[type=range]::-moz-range-thumb {
+    width: 22px; height: 22px; border-radius: 50%; background: #fff; border: 3px solid var(--rain);
+  }
+  :is(button, input[type=range]):focus-visible { outline: 3px solid #fff; outline-offset: 2px; }
+
+  .status { margin: 8px 0 0; min-height: 1.2em; font-size: 0.85rem; color: var(--warn); }
+
+  .leaflet-container { font-family: inherit; }
+
+  @media (max-width: 380px) {
+    .stats { grid-template-columns: repeat(2, 1fr); }
+  }
+</style>
+</head>
+<body>
+
+<div class="stage">
+  <div id="map" aria-label="Regenradar-Karte"></div>
+  <div class="map-actions">
+    <button class="chip" id="btnLocate" type="button">Mein Standort</button>
+    <button class="chip" id="btnRefresh" type="button">Aktualisieren</button>
+  </div>
+</div>
+
+<section class="panel" aria-label="Wetter und Radar-Steuerung">
+  <div class="wx">
+    <div>
+      <h1 class="place" id="place">Standort wird ermittelt …</h1>
+      <p class="desc" id="desc">&nbsp;</p>
+    </div>
+    <div class="temp">
+      <span class="icon" id="icon" aria-hidden="true"></span>
+      <span class="deg" id="temp">–</span>
+    </div>
+  </div>
+
+  <dl class="stats">
+    <div><dt>Gefühlt</dt><dd id="sFeel">–</dd></div>
+    <div><dt>Wind</dt><dd id="sWind">–</dd></div>
+    <div><dt>Luftfeuchte</dt><dd id="sHum">–</dd></div>
+    <div><dt>Niederschlag</dt><dd id="sRain">–</dd></div>
+  </dl>
+
+  <div class="player">
+    <button class="play" id="play" type="button" aria-label="Abspielen" disabled></button>
+    <div class="scrub">
+      <input id="slider" type="range" min="0" max="0" step="1" value="0" disabled aria-label="Zeitverlauf des Radars">
+      <div class="times">
+        <span><strong id="tLabel">–</strong><span class="rel" id="tRel"></span></span>
+        <span class="progress" id="tProgress"></span>
+      </div>
+    </div>
+  </div>
+
+  <p class="status" id="status" role="status"></p>
+</section>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+"use strict";
+
+/* ------------------------------------------------------------------
+   Einstellungen
+------------------------------------------------------------------ */
+const RADAR_INDEX     = "https://api.rainviewer.com/public/weather-maps.json";
+const RADAR_OPACITY   = 0.75;
+const FRAME_MS        = 600;    // Anzeigedauer pro Bild
+const LAST_FRAME_MS   = 1600;   // Pause beim neuesten Bild vor dem Neustart
+const MAX_REQ_PER_MIN = 80;     // RainViewer erlaubt 100 Anfragen pro IP und Minute
+const REFRESH_MS      = 5 * 60 * 1000;
+const START_VIEW      = [51.16, 10.45];  // Deutschland, bis der Standort bekannt ist
+const START_ZOOM      = 6;
+const LOCAL_ZOOM      = 7;     // RainViewer liefert höchstens bis Zoom 7 echte Daten
+
+const $ = (id) => document.getElementById(id);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const setStatus = (t) => { $("status").textContent = t || ""; };
+
+async function getJson(url, ms = 10000) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  try {
+    const res = await fetch(url, { signal: ctrl.signal });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    return await res.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/* ------------------------------------------------------------------
+   Karte
+------------------------------------------------------------------ */
+const map = L.map("map", { zoomControl: false, minZoom: 4, maxZoom: 10 })
+  .setView(START_VIEW, START_ZOOM);
+L.control.zoom({ position: "topright" }).addTo(map);
+L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  maxZoom: 19,
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>'
+}).addTo(map);
+
+let pos = null;
+let marker = null;
+
+function drawMarker() {
+  if (marker) marker.remove();
+  marker = L.circleMarker([pos.lat, pos.lon], {
+    radius: 8, color: "#fff", weight: 3, fillColor: "#e5484d", fillOpacity: 1
+  }).addTo(map);
+}
+
+/* ------------------------------------------------------------------
+   Radar: ein Tile-Layer pro Zeitpunkt, nur einer ist sichtbar
+------------------------------------------------------------------ */
+let host = "";
+let frames = [];          // [{time, path}]
+let layers = [];          // layers[i] = L.TileLayer | null
+let ready = new Set();    // Indizes, deren Kacheln geladen sind
+let current = 0;
+let playing = false;
+let playTimer = null;
+let preloadId = 0;
+let preloadTimer = null;
+let perLayer = 12;        // geschätzte Kachelanzahl pro Bild
+let reqTotal = 0;
+let reqLog = [];
+
+const ICON_PLAY  = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>';
+const ICON_PAUSE = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>';
+const playBtn = $("play");
+const slider = $("slider");
+
+function recentRequests() {
+  const cut = Date.now() - 60000;
+  reqLog = reqLog.filter((t) => t > cut);
+  return reqLog.length;
+}
+
+function makeLayer(i) {
+  if (layers[i]) return layers[i];
+  // 512er-Kacheln: viermal weniger Anfragen als bei 256er-Kacheln
+  const layer = L.tileLayer(host + frames[i].path + "/512/{z}/{x}/{y}/2/1_1.png", {
+    tileSize: 512,
+    zoomOffset: -1,
+    maxNativeZoom: 7,
+    maxZoom: 10,
+    opacity: 0,
+    keepBuffer: 1,
+    attribution: 'Radar: <a href="https://www.rainviewer.com/" target="_blank" rel="noopener">RainViewer</a>'
+  });
+  layer.on("tileloadstart", () => { reqTotal++; reqLog.push(Date.now()); });
+  layer.on("tileerror", () => setStatus("Einige Radarkacheln konnten nicht geladen werden. Bitte kurz warten und aktualisieren."));
+  layer.on("load", () => { ready.add(i); updateUi(); });
+  layer.addTo(map);
+  layers[i] = layer;
+  return layer;
+}
+
+function fmtTime(sec) {
+  return new Date(sec * 1000).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }) + " Uhr";
+}
+
+function fmtRel(sec) {
+  const min = Math.round((Date.now() / 1000 - sec) / 60);
+  if (Math.abs(min) < 3) return "jetzt";
+  return min > 0 ? "vor " + min + " Min." : "in " + (-min) + " Min.";
+}
+
+function updateUi() {
+  if (!frames.length) return;
+  const f = frames[current];
+  slider.value = current;
+  slider.style.setProperty("--pct", frames.length > 1 ? (current / (frames.length - 1)) * 100 + "%" : "100%");
+  $("tLabel").textContent = fmtTime(f.time);
+  $("tRel").textContent = fmtRel(f.time);
+  const all = ready.size >= frames.length;
+  $("tProgress").textContent = all ? "" : "Lade Bilder " + Math.min(ready.size, frames.length) + "/" + frames.length;
+  playBtn.disabled = !all;
+  playBtn.innerHTML = playing ? ICON_PAUSE : ICON_PLAY;
+  playBtn.setAttribute("aria-label", playing ? "Anhalten" : "Abspielen");
+}
+
+function show(i) {
+  makeLayer(i);
+  layers.forEach((l, k) => { if (l) l.setOpacity(k === i ? RADAR_OPACITY : 0); });
+  current = i;
+  updateUi();
+}
+
+/* Wiedergabe */
+function stop() {
+  playing = false;
+  clearTimeout(playTimer);
+  updateUi();
+}
+
+function schedule() {
+  clearTimeout(playTimer);
+  const delay = current === frames.length - 1 ? LAST_FRAME_MS : FRAME_MS;
+  playTimer = setTimeout(() => {
+    if (!playing) return;
+    show((current + 1) % frames.length);
+    schedule();
+  }, delay);
+}
+
+function play() {
+  if (ready.size < frames.length) return;
+  playing = true;
+  if (current >= frames.length - 1) show(0);
+  updateUi();
+  schedule();
+}
+
+playBtn.addEventListener("click", () => (playing ? stop() : play()));
+
+slider.addEventListener("input", () => {
+  stop();
+  show(Number(slider.value));
+});
+
+/* Restliche Bilder im Hintergrund nachladen, ohne das Anfragelimit zu sprengen */
+function schedulePreload(delay) {
+  clearTimeout(preloadTimer);
+  preloadTimer = setTimeout(preload, delay);
+}
+
+async function preload() {
+  const id = ++preloadId;
+  const order = [...frames.keys()].reverse();      // neueste zuerst
+  for (const i of order) {
+    if (id !== preloadId) return;
+    if (layers[i]) continue;
+    while (recentRequests() + perLayer > MAX_REQ_PER_MIN) {
+      await sleep(1000);
+      if (id !== preloadId) return;
+    }
+    const n0 = reqTotal;
+    makeLayer(i);
+    const t0 = Date.now();
+    while (!ready.has(i) && Date.now() - t0 < 10000) {
+      await sleep(150);
+      if (id !== preloadId) return;
+    }
+    ready.add(i);
+    perLayer = Math.max(perLayer, reqTotal - n0);
+    updateUi();
+  }
+}
+
+/* Beim Verschieben/Zoomen nur das aktuelle Bild behalten (spart Anfragen) */
+map.on("movestart", () => {
+  stop();
+  preloadId++;
+  clearTimeout(preloadTimer);
+  layers.forEach((l, k) => {
+    if (l && k !== current) { map.removeLayer(l); layers[k] = null; }
+  });
+  ready = new Set(ready.has(current) ? [current] : []);
+  updateUi();
+});
+map.on("moveend", () => { if (frames.length) schedulePreload(500); });
+
+async function loadRadar(force) {
+  let data;
+  try {
+    data = await getJson(RADAR_INDEX);
+  } catch (e) {
+    setStatus("Radardaten konnten nicht geladen werden. Bitte später erneut versuchen.");
+    return;
+  }
+  const list = [...(data.radar?.past ?? []), ...(data.radar?.nowcast ?? [])];
+  if (!list.length) { setStatus("Aktuell sind keine Radarbilder verfügbar."); return; }
+
+  const newest = list[list.length - 1].time;
+  if (!force && frames.length && frames[frames.length - 1].time === newest) { updateUi(); return; }
+
+  stop();
+  preloadId++;
+  layers.forEach((l) => l && map.removeLayer(l));
+  layers = [];
+  ready = new Set();
+  host = data.host;
+  frames = list.map((f) => ({ time: f.time, path: f.path }));
+  slider.max = frames.length - 1;
+  slider.disabled = false;
+  setStatus("");
+  show(frames.length - 1);
+  schedulePreload(1200);
+}
+
+/* ------------------------------------------------------------------
+   Standort
+------------------------------------------------------------------ */
+function locate() {
+  setStatus("");
+  $("place").textContent = "Standort wird ermittelt …";
+  if (!("geolocation" in navigator)) {
+    $("place").textContent = "Kein Standort";
+    setStatus("Dieser Browser unterstützt keine Standortabfrage.");
+    return;
+  }
+  navigator.geolocation.getCurrentPosition(onPosition, onPositionError, {
+    enableHighAccuracy: false, timeout: 15000, maximumAge: 60000
+  });
+}
+
+function onPosition(p) {
+  pos = { lat: p.coords.latitude, lon: p.coords.longitude };
+  drawMarker();
+  map.setView([pos.lat, pos.lon], LOCAL_ZOOM);
+  loadPlace();
+  loadWeather();
+}
+
+function onPositionError(err) {
+  $("place").textContent = "Kein Standort";
+  const msg = {
+    1: "Standortzugriff nicht erlaubt. Erlaube ihn in den Browser-Einstellungen und tippe auf „Mein Standort“.",
+    2: "Der Standort ist gerade nicht verfügbar.",
+    3: "Die Standortabfrage hat zu lange gedauert. Bitte erneut versuchen."
+  };
+  setStatus(msg[err.code] || "Standort konnte nicht ermittelt werden.");
+}
+
+/* Ortsname: erst Nominatim (OpenStreetMap), sonst BigDataCloud */
+async function loadPlace() {
+  const lat = pos.lat.toFixed(4), lon = pos.lon.toFixed(4);
+  let name = "";
+  try {
+    const d = await getJson("https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=12&accept-language=de&lat=" + lat + "&lon=" + lon);
+    const a = d.address || {};
+    name = a.city || a.town || a.village || a.municipality || a.suburb || a.county || "";
+  } catch (e) { /* weiter mit Fallback */ }
+  if (!name) {
+    try {
+      const d = await getJson("https://api.bigdatacloud.net/data/reverse-geocode-client?localityLanguage=de&latitude=" + lat + "&longitude=" + lon);
+      name = d.city || d.locality || d.principalSubdivision || "";
+    } catch (e) { /* ignorieren */ }
+  }
+  $("place").textContent = name || lat + ", " + lon;
+}
+
+/* ------------------------------------------------------------------
+   Wetter (Open-Meteo)
+------------------------------------------------------------------ */
+const WMO = {
+  0: "Klar", 1: "Überwiegend klar", 2: "Teils bewölkt", 3: "Bedeckt",
+  45: "Nebel", 48: "Reifnebel",
+  51: "Leichter Nieselregen", 53: "Nieselregen", 55: "Starker Nieselregen",
+  56: "Gefrierender Nieselregen", 57: "Starker gefrierender Nieselregen",
+  61: "Leichter Regen", 63: "Regen", 65: "Starker Regen",
+  66: "Gefrierender Regen", 67: "Starker gefrierender Regen",
+  71: "Leichter Schneefall", 73: "Schneefall", 75: "Starker Schneefall", 77: "Schneegriesel",
+  80: "Leichte Regenschauer", 81: "Regenschauer", 82: "Heftige Regenschauer",
+  85: "Leichte Schneeschauer", 86: "Starke Schneeschauer",
+  95: "Gewitter", 96: "Gewitter mit Hagel", 99: "Gewitter mit starkem Hagel"
+};
+
+function wmoIcon(code, isDay) {
+  if (code === 0 || code === 1) return isDay ? "☀️" : "🌙";
+  if (code === 2) return isDay ? "⛅" : "☁️";
+  if (code === 3) return "☁️";
+  if (code === 45 || code === 48) return "🌫️";
+  if (code >= 51 && code <= 57) return "🌦️";
+  if (code >= 61 && code <= 67) return "🌧️";
+  if (code >= 71 && code <= 77) return "🌨️";
+  if (code >= 80 && code <= 82) return "🌦️";
+  if (code === 85 || code === 86) return "🌨️";
+  if (code >= 95) return "⛈️";
+  return "🌡️";
+}
+
+function compass(deg) {
+  return ["N", "NO", "O", "SO", "S", "SW", "W", "NW"][Math.round(deg / 45) % 8];
+}
+
+async function loadWeather() {
+  if (!pos) return;
+  const params = new URLSearchParams({
+    latitude: pos.lat.toFixed(4),
+    longitude: pos.lon.toFixed(4),
+    current: "temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,wind_speed_10m,wind_direction_10m,is_day",
+    wind_speed_unit: "kmh",
+    timezone: "auto"
+  });
+  try {
+    const d = await getJson("https://api.open-meteo.com/v1/forecast?" + params);
+    const c = d.current;
+    $("temp").textContent = Math.round(c.temperature_2m) + "°";
+    $("icon").textContent = wmoIcon(c.weather_code, c.is_day === 1);
+    $("desc").textContent = WMO[c.weather_code] || "–";
+    $("sFeel").textContent = Math.round(c.apparent_temperature) + "°";
+    $("sWind").textContent = Math.round(c.wind_speed_10m) + " km/h " + compass(c.wind_direction_10m);
+    $("sHum").textContent = Math.round(c.relative_humidity_2m) + " %";
+    $("sRain").textContent = c.precipitation.toFixed(1).replace(".", ",") + " mm";
+  } catch (e) {
+    setStatus("Wetterdaten konnten nicht geladen werden.");
+  }
+}
+
+/* ------------------------------------------------------------------
+   Start
+------------------------------------------------------------------ */
+$("btnLocate").addEventListener("click", locate);
+$("btnRefresh").addEventListener("click", () => {
+  setStatus("");
+  loadRadar(true);
+  loadWeather();
+});
+
+let lastRefresh = Date.now();
+function autoRefresh() {
+  lastRefresh = Date.now();
+  loadRadar(false);
+  loadWeather();
+}
+setInterval(autoRefresh, REFRESH_MS);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && Date.now() - lastRefresh > REFRESH_MS) autoRefresh();
+});
+
+playBtn.innerHTML = ICON_PLAY;
+loadRadar(true);
+locate();
+</script>
+</body>
+</html>
